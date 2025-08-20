@@ -1,50 +1,51 @@
 # ingest.py
-import argparse
 import os
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_pinecone import PineconeVectorStore
+from dotenv import load_dotenv
 
-# Define the path to your URL list file
+load_dotenv()
+
+# Define Pinecone credentials
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 URLS_FILE = "urls.txt"
 
-def build_index(urls, index_dir="faiss_index", chunk_size=800, chunk_overlap=150):
-    # ... (rest of the function is the same as before) ...
-    # The function body remains identical to the updated version above
-    
+def ingest_to_pinecone(urls):
     print(f"Loading {len(urls)} URL(s)…")
     loader = WebBaseLoader(urls)
     docs = loader.load()
 
-    print(f"Splitting into chunks… (size={chunk_size}, overlap={chunk_overlap})")
+    print("Splitting into chunks…")
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        chunk_size=800,
+        chunk_overlap=150,
         separators=["\n\n", "\n", " ", ""],
     )
-    new_chunks = splitter.split_documents(docs)
-    print(f"Total new chunks: {len(new_chunks)}")
+    chunks = splitter.split_documents(docs)
+    print(f"Total chunks: {len(chunks)}")
 
-    print("Embedding chunks (MiniLM)…")
+    print("Embedding chunks and pushing to Pinecone…")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    if os.path.exists(index_dir):
-        print(f"Loading existing FAISS index from {index_dir}…")
-        vs = FAISS.load_local(index_dir, embeddings, allow_dangerous_deserialization=True)
-        print(f"Adding new documents to the existing index...")
-        vs.add_documents(new_chunks)
-    else:
-        print(f"Building a new FAISS index → {index_dir}")
-        vs = FAISS.from_documents(new_chunks, embedding=embeddings)
-        
-    vs.save_local(index_dir)
+    # This line connects to Pinecone and upserts the documents.
+    PineconeVectorStore.from_documents(
+        chunks,
+        embeddings,
+        index_name=INDEX_NAME
+    )
     print("✅ Done.")
 
 if __name__ == "__main__":
+    if not all([PINECONE_API_KEY, PINECONE_ENVIRONMENT, INDEX_NAME]):
+        raise RuntimeError("Pinecone environment variables not set.")
+    
     if not os.path.exists(URLS_FILE):
         print(f"Error: URL list file not found at {URLS_FILE}")
     else:
         with open(URLS_FILE, 'r') as f:
             urls = [line.strip() for line in f if line.strip()]
-        build_index(urls)
+        ingest_to_pinecone(urls)

@@ -11,3 +11,5 @@ tiktoken
 sentence-transformers
 gradio
 api
+langchain-pinecone
+pinecone-client
