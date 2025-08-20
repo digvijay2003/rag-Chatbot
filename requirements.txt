@@ -1,0 +1,13 @@
+langchain
+python-dotenv
+langchain-openai
+langchain_community
+ipykernel
+beautifulsoup4
+faiss-cpu
+streamlit
+langchain-groq
+tiktoken
+sentence-transformers
+gradio
+api
