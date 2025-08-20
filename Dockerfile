@@ -21,4 +21,5 @@ COPY . /app
 EXPOSE 8000
 
 # Command to run the application with Uvicorn
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+# ... (rest of your Dockerfile) ...
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
