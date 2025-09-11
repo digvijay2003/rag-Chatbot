@@ -1,5 +1,7 @@
 # FeedHope RAG Chatbot
 
+If you'd like to use this chatbot, please email me for an API key
+
 A Retrieval-Augmented Generation (RAG) chatbot built with FastAPI that helps users find information about food distribution opportunities and volunteer activities. The system combines vector search using Pinecone with LLM responses from Groq to provide contextual, accurate answers based on a knowledge base.
 
 ## 🌟 Features
