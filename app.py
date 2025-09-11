@@ -68,12 +68,10 @@ app_logger.info(f"Configuration loaded - Model: {MODEL_NAME}, Embedding: {GOOGLE
 # -----------------------------
 class RequestTrackingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Generate unique request ID
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         request.state.start_time = time.time()
         
-        # Log incoming request
         client_ip = await get_client_ip(request)
         app_logger.info(
             f"Incoming request",
@@ -89,11 +87,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         
         try:
             response = await call_next(request)
-            
-            # Calculate response time
+
             response_time = time.time() - request.state.start_time
             
-            # Log response
             app_logger.info(
                 f"Request completed",
                 extra={
@@ -104,7 +100,6 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 }
             )
             
-            # Add request ID to response headers
             response.headers["X-Request-ID"] = request_id
             return response
             
@@ -750,9 +745,6 @@ async def retrieve_docs_direct(
 
     for attempt in range(1, max_retries + 1):
         try:
-            # pinecone Index.query signature differs by client; this example assumes
-            # the index_handle has a `query` method similar to pinecone-python v2.
-            # Adjust params to match the pinecone client in your environment.
             resp = index.query(
                 vector=q_emb,
                 top_k=top_k,
@@ -766,14 +758,11 @@ async def retrieve_docs_direct(
                 extra={"attempt": attempt, "top_k": top_k, "time_ms": round((time.time()-request_start)*1000, 2)}
             )
 
-            # Map Pinecone response to simple Document-like dicts
             docs = []
             matches = getattr(resp, "matches", None) or resp.get("matches", [])
             for m in matches:
                 metadata = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
-                # Use 'id' or metadata['source'] for source
                 text = metadata.get("text") or metadata.get("content") or metadata.get("source_text") or ""
-                # Fall back to storing the vector id as source and any metadata snippet available
                 if not text:
                     text = metadata.get("snippet") or metadata.get("summary") or ""
                 docs.append(Document(page_content=text, metadata=metadata))
@@ -782,7 +771,6 @@ async def retrieve_docs_direct(
 
         except Exception as exc:
             last_exc = exc
-            # log full exception for diagnosis
             vectorstore_logger.warning(
                 "Pinecone query failed, attempt will retry",
                 extra={
@@ -792,7 +780,6 @@ async def retrieve_docs_direct(
                 exc_info=True
             )
             if attempt < max_retries:
-                # exponential backoff with jitter
                 backoff = base_backoff * (2 ** (attempt - 1)) + (0.1 * attempt)
                 await asyncio.sleep(backoff)
             else:
@@ -802,8 +789,6 @@ async def retrieve_docs_direct(
                     exc_info=True
                 )
                 raise RuntimeError(f"Pinecone query failed after {max_retries} attempts: {last_exc}")
-
-
 
 # -----------------------------
 # Async chat endpoint
@@ -841,7 +826,6 @@ async def chat_endpoint(
             }
         )
 
-        # Retrieve documents with retry logic
         retrieval_start = time.time()
         max_retries = 3
         docs = None
@@ -853,7 +837,7 @@ async def chat_endpoint(
                     index=index_handle,
                     embeddings_adapter=embeddings,
                     top_k=TOP_K,
-                    namespace=None,  # or your namespace if used
+                    namespace=None,  
                     max_retries=3
                 )
                 break
@@ -880,7 +864,7 @@ async def chat_endpoint(
                             "attempt": attempt + 1
                         }
                     )
-                    await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+                    await asyncio.sleep(1 * (attempt + 1)) 
         
         retrieval_time = time.time() - retrieval_start
         
@@ -911,7 +895,6 @@ async def chat_endpoint(
             }
         )
 
-        # Store conversation history
         if request_model.session_id:
             if request_model.session_id not in conversation_store:
                 conversation_store[request_model.session_id] = []
@@ -925,7 +908,6 @@ async def chat_endpoint(
                 "text": answer
             })
             
-            # Keep only last 20 turns (10 exchanges) to prevent memory bloat
             if len(conversation_store[request_model.session_id]) > 20:
                 conversation_store[request_model.session_id] = conversation_store[request_model.session_id][-20:]
             
@@ -938,7 +920,6 @@ async def chat_endpoint(
                 }
             )
 
-        # Build sources response
         sources = []
         for doc in docs:
             snippet = (doc.page_content[:300] + "...") if len(doc.page_content) > 300 else doc.page_content
@@ -948,7 +929,6 @@ async def chat_endpoint(
                 snippet=snippet
             ))
 
-        # Calculate total response time
         total_time = time.time() - start_time
         
         app_logger.info(
@@ -972,7 +952,6 @@ async def chat_endpoint(
         )
 
     except HTTPException:
-        # Re-raise HTTP exceptions (like rate limits) without logging as errors
         raise
         
     except Exception as e:
