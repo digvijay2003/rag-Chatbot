@@ -869,8 +869,103 @@ async def chat_endpoint(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# -----------------------------
+# Additional Endpoints
+# -----------------------------
+@app.get("/metrics")
+async def get_metrics():
+    """Basic metrics endpoint"""
+    app_logger.info("Metrics endpoint accessed")
+    
+    # Calculate basic stats
+    total_sessions = len(conversation_store)
+    total_turns = sum(len(history) for history in conversation_store.values())
+    
+    return {
+        "status": "ok",
+        "conversations": {
+            "total_sessions": total_sessions,
+            "total_turns": total_turns,
+            "active_sessions": total_sessions  
+        },
+        "timestamp": int(time.time())
+    }
+
+@app.delete("/conversations/{session_id}")
+async def delete_conversation(session_id: str, request: Request):
+    """Delete a conversation session"""
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    
+    if session_id in conversation_store:
+        turns_count = len(conversation_store[session_id])
+        del conversation_store[session_id]
+        
+        app_logger.info(
+            "Conversation deleted",
+            extra={
+                "request_id": request_id,
+                "session_id": session_id,
+                "turns_deleted": turns_count
+            }
+        )
+        
+        return {
+            "status": "deleted",
+            "session_id": session_id,
+            "turns_deleted": turns_count
+        }
+    else:
+        app_logger.warning(
+            "Attempt to delete non-existent conversation",
+            extra={
+                "request_id": request_id,
+                "session_id": session_id
+            }
+        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+# Error handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler for unhandled errors"""
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    
+    app_logger.error(
+        "Unhandled exception caught",
+        extra={
+            "request_id": request_id,
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "url": str(request.url),
+            "method": request.method
+        },
+        exc_info=True
+    )
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "request_id": request_id,
+            "timestamp": int(time.time())
+        }
+    )
+
 if __name__ == "__main__":
     import uvicorn
+    
     app_logger.info("Starting FeedHope RAG Chatbot server...")
+    
+    # Log startup configuration (without sensitive data)
+    app_logger.info(
+        "Server configuration",
+        extra={
+            "model": MODEL_NAME,
+            "embedding_model": GOOGLE_EMBED_MODEL,
+            "top_k": TOP_K,
+            "pinecone_index": PINECONE_INDEX_NAME,
+            "has_api_key": API_KEY is not None
+        }
+    )
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)
-                
