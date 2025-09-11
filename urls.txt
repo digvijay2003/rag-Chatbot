@@ -1,3 +1,11 @@
 https://volunteerplatform.onrender.com/feedhope-how-it-works
 https://volunteerplatform.onrender.com/feedhope-about-us
 https://volunteerplatform.onrender.com/feedhope
+https://volunteerplatform.onrender.com/volunteer-registration
+https://volunteerplatform.onrender.com/volunteer-login
+https://volunteerplatform.onrender.com/feedhope-contact-us
+https://volunteerplatform.onrender.com/feedhope-user-login
+https://volunteerplatform.onrender.com/feedhope-user-register
+https://volunteerplatform.onrender.com/feedhope-donation-food
+https://volunteerplatform.onrender.com/feedhope-request-food
+https://volunteerplatform.onrender.com/feedhope-user-login

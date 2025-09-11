@@ -1,6 +1,5 @@
 langchain
 python-dotenv
-langchain-openai
 langchain_community
 ipykernel
 beautifulsoup4
@@ -8,8 +7,17 @@ faiss-cpu
 streamlit
 langchain-groq
 tiktoken
-sentence-transformers
 gradio
 api
 langchain-pinecone
 pinecone-client
+python-multipart
+html5lib
+tqdm
+uvicorn[standard]
+fastapi
+requests
+numpy
+langchain_core
+redis[async]
+bleach
