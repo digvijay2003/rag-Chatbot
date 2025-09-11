@@ -722,6 +722,89 @@ async def debug_rate_limit(request: Request, session_id: Optional[str] = None):
         }
     }
 
+# Insert this above the chat endpoint (near other helpers)
+async def retrieve_docs_direct(
+    query_text: str,
+    index,
+    embeddings_adapter: GoogleEmbeddingsAdapter,
+    top_k: int = 4,
+    namespace: Optional[str] = None,
+    max_retries: int = 3,
+    base_backoff: float = 1.0,
+):
+    """
+    Compute query embedding and call Pinecone index.query directly with retries.
+    Returns a list of langchain.schema.Document-like objects:
+      - page_content
+      - metadata (dict)
+    """
+    request_start = time.time()
+    last_exc = None
+
+    # embed the query (async wrapper)
+    try:
+        q_emb = await embeddings_adapter.aembed_query(query_text)
+    except Exception as e:
+        embedding_logger.error("Failed to create query embedding", exc_info=True, extra={"error": str(e)})
+        raise
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            # pinecone Index.query signature differs by client; this example assumes
+            # the index_handle has a `query` method similar to pinecone-python v2.
+            # Adjust params to match the pinecone client in your environment.
+            resp = index.query(
+                vector=q_emb,
+                top_k=top_k,
+                include_metadata=True,
+                include_values=False,
+                namespace=namespace,
+            )
+
+            vectorstore_logger.info(
+                "Pinecone query successful",
+                extra={"attempt": attempt, "top_k": top_k, "time_ms": round((time.time()-request_start)*1000, 2)}
+            )
+
+            # Map Pinecone response to simple Document-like dicts
+            docs = []
+            matches = getattr(resp, "matches", None) or resp.get("matches", [])
+            for m in matches:
+                metadata = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
+                # Use 'id' or metadata['source'] for source
+                text = metadata.get("text") or metadata.get("content") or metadata.get("source_text") or ""
+                # Fall back to storing the vector id as source and any metadata snippet available
+                if not text:
+                    text = metadata.get("snippet") or metadata.get("summary") or ""
+                docs.append(Document(page_content=text, metadata=metadata))
+
+            return docs
+
+        except Exception as exc:
+            last_exc = exc
+            # log full exception for diagnosis
+            vectorstore_logger.warning(
+                "Pinecone query failed, attempt will retry",
+                extra={
+                    "attempt": attempt,
+                    "error": str(exc),
+                },
+                exc_info=True
+            )
+            if attempt < max_retries:
+                # exponential backoff with jitter
+                backoff = base_backoff * (2 ** (attempt - 1)) + (0.1 * attempt)
+                await asyncio.sleep(backoff)
+            else:
+                vectorstore_logger.error(
+                    "Pinecone query failed after max retries",
+                    extra={"max_retries": max_retries},
+                    exc_info=True
+                )
+                raise RuntimeError(f"Pinecone query failed after {max_retries} attempts: {last_exc}")
+
+
+
 # -----------------------------
 # Async chat endpoint
 # -----------------------------
@@ -765,7 +848,14 @@ async def chat_endpoint(
         
         for attempt in range(max_retries):
             try:
-                docs = await retriever.ainvoke(request_model.message)
+                docs = await retrieve_docs_direct(
+                    query_text=request_model.message,
+                    index=index_handle,
+                    embeddings_adapter=embeddings,
+                    top_k=TOP_K,
+                    namespace=None,  # or your namespace if used
+                    max_retries=3
+                )
                 break
             except Exception as e:
                 if attempt == max_retries - 1:
