@@ -1,6 +1,7 @@
 # FeedHope RAG Chatbot
 
-If you'd like to use this chatbot, please email me for an API key
+If you'd like to use this chatbot, please email me for an API key 
+Gmail = digupathania25@gmail.com
 
 A Retrieval-Augmented Generation (RAG) chatbot built with FastAPI that helps users find information about food distribution opportunities and volunteer activities. The system combines vector search using Pinecone with LLM responses from Groq to provide contextual, accurate answers based on a knowledge base.
 
@@ -46,21 +47,6 @@ curl -X POST "https://rag-chatbot-uvwl.onrender.com/chat" \
     "message": "How can I volunteer for food distribution?",
     "session_id": "test-session-123"
   }'
-```
-
-### Example Response
-```json
-{
-  "answer": "Based on the available information, you can volunteer for food distribution by...",
-  "sources": [
-    {
-      "source": "volunteer_guide.pdf",
-      "chunk": 1,
-      "snippet": "Volunteers can help with food distribution by..."
-    }
-  ],
-  "request_id": "12345678-1234-5678-9012-123456789012"
-}
 ```
 
 ### Health Check
