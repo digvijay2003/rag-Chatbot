@@ -488,8 +488,8 @@ except Exception as e:
     vectorstore_logger.error(f"Failed to connect to Pinecone: {e}")
     raise
 
-vectorstore = PineconeVectorStore(embedding=embeddings, index=index_handle)
-retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+# vectorstore = PineconeVectorStore(embedding=embeddings, index=index_handle)
+# retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
 
 app_logger.info("Initializing LLM...")
 try:
@@ -520,15 +520,15 @@ def format_docs(docs: list[Document]) -> str:
 
 format_docs_runnable = RunnableLambda(format_docs)
 
-rag_chain = (
-    {
-        "question": RunnablePassthrough(),
-        "context": retriever | format_docs_runnable,
-    }
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+# rag_chain = (
+#     {
+#         "question": RunnablePassthrough(),
+#         "context": retriever | format_docs_runnable,
+#     }
+#     | prompt
+#     | llm
+#     | StrOutputParser()
+# )
 
 # -----------------------------
 # FastAPI app & models
@@ -720,7 +720,6 @@ async def debug_rate_limit(request: Request, session_id: Optional[str] = None):
 # Insert this above the chat endpoint (near other helpers)
 async def retrieve_docs_direct(
     query_text: str,
-    index,
     embeddings_adapter: GoogleEmbeddingsAdapter,
     top_k: int = 4,
     namespace: Optional[str] = None,
@@ -729,66 +728,142 @@ async def retrieve_docs_direct(
 ):
     """
     Compute query embedding and call Pinecone index.query directly with retries.
-    Returns a list of langchain.schema.Document-like objects:
-      - page_content
-      - metadata (dict)
+    Enhanced with better error handling and initialization checks.
     """
     request_start = time.time()
-    last_exc = None
+    
+    # Validate environment variables first
+    if not PINECONE_API_KEY:
+        raise RuntimeError("PINECONE_API_KEY not set")
+    if not PINECONE_INDEX_NAME:
+        raise RuntimeError("PINECONE_INDEX_NAME not set")
 
     # embed the query (async wrapper)
     try:
+        vectorstore_logger.info(f"Starting query embedding for text length: {len(query_text)}")
         q_emb = await embeddings_adapter.aembed_query(query_text)
+        vectorstore_logger.info(f"Query embedding successful, dimension: {len(q_emb) if q_emb else 'None'}")
+        
+        if not q_emb or len(q_emb) == 0:
+            raise RuntimeError("Empty embedding vector received")
+            
     except Exception as e:
         embedding_logger.error("Failed to create query embedding", exc_info=True, extra={"error": str(e)})
-        raise
+        raise RuntimeError(f"Embedding failed: {str(e)}")
 
-    for attempt in range(1, max_retries + 1):
+    def _query_pinecone():
+        """Create fresh sync client and query - runs in thread pool"""
         try:
-            resp = index.query(
+            vectorstore_logger.info("Creating new Pinecone client")
+            
+            # Initialize based on Pinecone version - newer versions don't need environment
+            if PINECONE_ENVIRONMENT:
+                pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+            else:
+                pc = Pinecone(api_key=PINECONE_API_KEY)
+                
+            vectorstore_logger.info("Pinecone client created successfully")
+            
+            # Get index handle
+            index = pc.Index(PINECONE_INDEX_NAME)
+            vectorstore_logger.info("Pinecone index handle obtained")
+            
+            # Quick connectivity test
+            try:
+                stats = index.describe_index_stats()
+                vectorstore_logger.info(f"Index connected - total vectors: {getattr(stats, 'total_vector_count', 'unknown')}")
+            except Exception as stats_error:
+                vectorstore_logger.warning(f"Could not get index stats but continuing: {stats_error}")
+            
+            vectorstore_logger.info(
+                f"Starting Pinecone query - vector dim: {len(q_emb)}, "
+                f"top_k: {top_k}, namespace: {namespace or 'default'}"
+            )
+            
+            # Execute query
+            result = index.query(
                 vector=q_emb,
                 top_k=top_k,
                 include_metadata=True,
                 include_values=False,
                 namespace=namespace,
             )
+            
+            vectorstore_logger.info(f"Pinecone query completed - got {len(result.matches) if hasattr(result, 'matches') else 'unknown'} matches")
+            return result
+            
+        except Exception as e:
+            error_msg = f"Pinecone query error: {type(e).__name__}: {str(e)}"
+            vectorstore_logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            vectorstore_logger.info(f"Attempting Pinecone query (attempt {attempt}/{max_retries})")
+            
+            # Run the sync Pinecone query in a thread pool
+            resp = await asyncio.to_thread(_query_pinecone)
+            
+            # Process results
+            matches = resp.matches if hasattr(resp, 'matches') else []
+            vectorstore_logger.info(f"Processing {len(matches)} matches from Pinecone")
+            
+            docs = []
+            for i, match in enumerate(matches):
+                try:
+                    # Extract metadata safely
+                    metadata = match.metadata if hasattr(match, 'metadata') else {}
+                    
+                    # Try different text fields
+                    text = (
+                        metadata.get("text") or 
+                        metadata.get("content") or 
+                        metadata.get("source_text") or
+                        metadata.get("snippet") or 
+                        metadata.get("summary") or 
+                        ""
+                    )
+                    
+                    if not text.strip():
+                        vectorstore_logger.warning(f"Match {i} has no text content, available keys: {list(metadata.keys())}")
+                        text = f"[No content available - Match {i}]"
+                    
+                    # Create document
+                    doc = Document(page_content=text.strip(), metadata=metadata)
+                    docs.append(doc)
+                    
+                except Exception as doc_error:
+                    vectorstore_logger.warning(f"Error processing match {i}: {doc_error}")
+                    continue
 
             vectorstore_logger.info(
                 "Pinecone query successful",
-                extra={"attempt": attempt, "top_k": top_k, "time_ms": round((time.time()-request_start)*1000, 2)}
+                extra={
+                    "attempt": attempt, 
+                    "documents_created": len(docs),
+                    "time_ms": round((time.time()-request_start)*1000, 2)
+                }
             )
-
-            docs = []
-            matches = getattr(resp, "matches", None) or resp.get("matches", [])
-            for m in matches:
-                metadata = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
-                text = metadata.get("text") or metadata.get("content") or metadata.get("source_text") or ""
-                if not text:
-                    text = metadata.get("snippet") or metadata.get("summary") or ""
-                docs.append(Document(page_content=text, metadata=metadata))
-
+            
             return docs
 
         except Exception as exc:
             last_exc = exc
-            vectorstore_logger.warning(
-                "Pinecone query failed, attempt will retry",
-                extra={
-                    "attempt": attempt,
-                    "error": str(exc),
-                },
+            vectorstore_logger.error(
+                f"Pinecone query failed on attempt {attempt}/{max_retries}: {type(exc).__name__}: {str(exc)}",
                 exc_info=True
             )
+            
             if attempt < max_retries:
-                backoff = base_backoff * (2 ** (attempt - 1)) + (0.1 * attempt)
+                backoff = base_backoff * (2 ** (attempt - 1))
+                vectorstore_logger.info(f"Retrying in {backoff} seconds...")
                 await asyncio.sleep(backoff)
-            else:
-                vectorstore_logger.error(
-                    "Pinecone query failed after max retries",
-                    extra={"max_retries": max_retries},
-                    exc_info=True
-                )
-                raise RuntimeError(f"Pinecone query failed after {max_retries} attempts: {last_exc}")
+    
+    # All attempts failed
+    final_error = f"All {max_retries} Pinecone query attempts failed. Last error: {type(last_exc).__name__}: {str(last_exc)}"
+    vectorstore_logger.error(final_error)
+    raise RuntimeError(final_error)
 
 # -----------------------------
 # Async chat endpoint
@@ -826,45 +901,29 @@ async def chat_endpoint(
             }
         )
 
+        # Document retrieval using direct method (no async Pinecone client)
         retrieval_start = time.time()
-        max_retries = 3
-        docs = None
         
-        for attempt in range(max_retries):
-            try:
-                docs = await retrieve_docs_direct(
-                    query_text=request_model.message,
-                    index=index_handle,
-                    embeddings_adapter=embeddings,
-                    top_k=TOP_K,
-                    namespace=None,  
-                    max_retries=3
-                )
-                break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    vectorstore_logger.error(
-                        f"Document retrieval failed after {max_retries} attempts",
-                        extra={
-                            "request_id": request_id,
-                            "error": str(e),
-                            "attempt": attempt + 1
-                        }
-                    )
-                    raise HTTPException(
-                        status_code=503, 
-                        detail="Vector database temporarily unavailable. Please try again."
-                    )
-                else:
-                    vectorstore_logger.warning(
-                        f"Document retrieval attempt {attempt + 1} failed, retrying",
-                        extra={
-                            "request_id": request_id,
-                            "error": str(e),
-                            "attempt": attempt + 1
-                        }
-                    )
-                    await asyncio.sleep(1 * (attempt + 1)) 
+        try:
+            docs = await retrieve_docs_direct(
+                query_text=request_model.message,
+                embeddings_adapter=embeddings,  # Remove index parameter
+                top_k=TOP_K,
+                namespace=None,
+                max_retries=3
+            )
+        except Exception as e:
+            vectorstore_logger.error(
+                f"Document retrieval failed",
+                extra={
+                    "request_id": request_id,
+                    "error": str(e)
+                }
+            )
+            raise HTTPException(
+                status_code=503, 
+                detail="Vector database temporarily unavailable. Please try again."
+            )
         
         retrieval_time = time.time() - retrieval_start
         
@@ -878,12 +937,28 @@ async def chat_endpoint(
             }
         )
         
+        # Format documents and build context
         retrieved_context = format_docs(docs)
         combined_context = build_context_with_history(retrieved_context, request_model.session_id)
 
-        # Run RAG chain
+        # Generate answer directly with LLM (no RAG chain)
         llm_start = time.time()
-        answer = await rag_chain.ainvoke({"question": request_model.message, "context": combined_context})
+        
+        # Create prompt manually
+        formatted_prompt = prompt.format(
+            question=request_model.message,
+            context=combined_context
+        )
+        
+        # Call LLM directly
+        answer = await llm.ainvoke(formatted_prompt)
+        
+        # Extract text content if it's a message object
+        if hasattr(answer, 'content'):
+            answer = answer.content
+        elif isinstance(answer, dict) and 'content' in answer:
+            answer = answer['content']
+        
         llm_time = time.time() - llm_start
         
         llm_logger.info(
@@ -891,10 +966,11 @@ async def chat_endpoint(
             extra={
                 "request_id": request_id,
                 "llm_time_ms": round(llm_time * 1000, 2),
-                "answer_length": len(answer)
+                "answer_length": len(str(answer))
             }
         )
 
+        # Store conversation history
         if request_model.session_id:
             if request_model.session_id not in conversation_store:
                 conversation_store[request_model.session_id] = []
@@ -905,7 +981,7 @@ async def chat_endpoint(
             })
             conversation_store[request_model.session_id].append({
                 "role": "assistant", 
-                "text": answer
+                "text": str(answer)
             })
             
             if len(conversation_store[request_model.session_id]) > 20:
@@ -920,6 +996,7 @@ async def chat_endpoint(
                 }
             )
 
+        # Build sources
         sources = []
         for doc in docs:
             snippet = (doc.page_content[:300] + "...") if len(doc.page_content) > 300 else doc.page_content
@@ -941,12 +1018,12 @@ async def chat_endpoint(
                 "retrieval_time_ms": round(retrieval_time * 1000, 2),
                 "llm_time_ms": round(llm_time * 1000, 2),
                 "sources_count": len(sources),
-                "answer_length": len(answer)
+                "answer_length": len(str(answer))
             }
         )
 
         return ChatResponse(
-            answer=answer,
+            answer=str(answer),
             sources=sources,
             request_id=request_id
         )
