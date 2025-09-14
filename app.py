@@ -968,6 +968,96 @@ async def chat_endpoint(
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.get("/debug/pinecone")
+async def debug_pinecone():
+    """Debug endpoint to test Pinecone connectivity"""
+    debug_info = {
+        "environment_check": {
+            "PINECONE_API_KEY": bool(PINECONE_API_KEY and len(PINECONE_API_KEY) > 10),
+            "PINECONE_ENVIRONMENT": PINECONE_ENVIRONMENT,
+            "PINECONE_INDEX_NAME": PINECONE_INDEX_NAME,
+            "api_key_length": len(PINECONE_API_KEY) if PINECONE_API_KEY else 0
+        },
+        "connection_test": {}
+    }
+    
+    try:
+        # Test 1: Create Pinecone client
+        pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+        debug_info["connection_test"]["client_creation"] = "SUCCESS"
+        
+        # Test 2: List indexes
+        try:
+            indexes = pc.list_indexes()
+            debug_info["connection_test"]["list_indexes"] = {
+                "status": "SUCCESS",
+                "count": len(indexes) if hasattr(indexes, '__len__') else 0,
+                "index_names": []
+            }
+            
+            # Safely extract index names
+            try:
+                if hasattr(indexes, '__iter__'):
+                    for idx in indexes:
+                        if hasattr(idx, 'name'):
+                            debug_info["connection_test"]["list_indexes"]["index_names"].append(idx.name)
+                        else:
+                            debug_info["connection_test"]["list_indexes"]["index_names"].append(str(idx))
+            except Exception as e:
+                debug_info["connection_test"]["list_indexes"]["index_names_error"] = str(e)
+                
+        except Exception as e:
+            debug_info["connection_test"]["list_indexes"] = {
+                "status": "FAILED",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+        
+        # Test 3: Get index handle
+        try:
+            index = pc.Index(PINECONE_INDEX_NAME)
+            debug_info["connection_test"]["index_handle"] = "SUCCESS"
+            
+            # Test 4: Get index stats
+            try:
+                stats = index.describe_index_stats()
+                debug_info["connection_test"]["index_stats"] = {
+                    "status": "SUCCESS",
+                    "total_vector_count": getattr(stats, 'total_vector_count', 'unknown'),
+                    "dimension": getattr(stats, 'dimension', 'unknown'),
+                    "index_fullness": getattr(stats, 'index_fullness', 'unknown'),
+                    "namespaces": {}
+                }
+                
+                # Safely extract namespace info
+                if hasattr(stats, 'namespaces') and stats.namespaces:
+                    for ns_name, ns_data in stats.namespaces.items():
+                        debug_info["connection_test"]["index_stats"]["namespaces"][ns_name] = {
+                            "vector_count": getattr(ns_data, 'vector_count', 'unknown')
+                        }
+                        
+            except Exception as e:
+                debug_info["connection_test"]["index_stats"] = {
+                    "status": "FAILED", 
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                }
+                
+        except Exception as e:
+            debug_info["connection_test"]["index_handle"] = {
+                "status": "FAILED",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+            
+    except Exception as e:
+        debug_info["connection_test"]["client_creation"] = {
+            "status": "FAILED",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+    
+    return debug_info
 
 if __name__ == "__main__":
     import uvicorn
